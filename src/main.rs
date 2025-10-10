@@ -1,10 +1,14 @@
 use anyhow::Result;
 use clap::Parser;
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 use tokio::sync::mpsc;
-use tracing::info;
 
 use configs::{Opts, SubCommand};
 use near_indexer;
+use near_indexer_primitives::types::AccountId;
 
 mod configs;
 
@@ -16,275 +20,142 @@ fn main() -> Result<()> {
 
     match opts.subcmd {
         SubCommand::Run => {
-            let indexer_config = near_indexer::IndexerConfig {
-                home_dir,
-                sync_mode: near_indexer::SyncModeEnum::LatestSynced,
-                await_for_node_synced: near_indexer::AwaitForNodeSyncedEnum::StreamWhileSyncing,
-                finality: near_indexer::near_primitives::types::Finality::Final,
-                validate_genesis: true,
-            };
-            let tokio_runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create Tokio runtime");
-            tokio_runtime.block_on(async move {
+            // Get the list of accounts to watch from the command line arguments
+            let watching_list: Vec<AccountId> = opts
+                .accounts
+                .split(',')
+                .map(|elem| AccountId::from_str(elem).expect("AccountId is invalid"))
+                .collect();
+
+            let system = actix::System::new();
+            system.block_on(async move {
+                let indexer_config = near_indexer::IndexerConfig {
+                    home_dir,
+                    sync_mode: near_indexer::SyncModeEnum::BlockHeight(opts.block_height),
+                    await_for_node_synced: near_indexer::AwaitForNodeSyncedEnum::StreamWhileSyncing,
+                    finality: near_indexer::near_primitives::types::Finality::Final,
+                    validate_genesis: true,
+                };
                 let indexer = near_indexer::Indexer::new(indexer_config).expect("Indexer::new()");
                 let stream = indexer.streamer();
-                listen_blocks(stream).await;
+                listen_blocks(stream, watching_list).await;
+                actix::System::current().stop();
             });
+            system.run().unwrap();
         }
         SubCommand::Init(config) => near_indexer::indexer_init_configs(&home_dir, config.into())?,
     }
     Ok(())
 }
 
-async fn listen_blocks(mut stream: mpsc::Receiver<near_indexer::StreamerMessage>) {
+async fn listen_blocks(
+    mut stream: mpsc::Receiver<near_indexer::StreamerMessage>,
+    watching_list: Vec<AccountId>,
+) {
+    // This will be a map of correspondence between transactions and receipts
+    let mut tx_receipt_ids = HashMap::<String, String>::new();
+    // This will be a list of receipt ids we're following
+    let mut wanted_receipt_ids = HashSet::<String>::new();
+
+    // Handle the messages from the stream
     while let Some(streamer_message) = stream.recv().await {
-        parse_message(&streamer_message);
-        info!(
-            target: "indexer_example",
-            "#{} {} Shards: {}, Transactions: {}, Receipts: {}, ExecutionOutcomes: {}",
-            streamer_message.block.header.height,
-            streamer_message.block.header.hash,
-            streamer_message.shards.len(),
-            streamer_message.shards.iter().map(|shard| if let Some(chunk) = &shard.chunk { chunk.transactions.len() } else { 0usize }).sum::<usize>(),
-            streamer_message.shards.iter().map(|shard| if let Some(chunk) = &shard.chunk { chunk.receipts.len() } else { 0usize }).sum::<usize>(),
-            streamer_message.shards.iter().map(|shard| shard.receipt_execution_outcomes.len()).sum::<usize>(),
+        parse_message(
+            &streamer_message,
+            &watching_list,
+            &mut tx_receipt_ids,
+            &mut wanted_receipt_ids,
         );
     }
 }
 
-fn parse_message(streamer_message: &near_indexer::StreamerMessage) {
-    println!("{:?}", streamer_message);
-    // TODO: handle data as you need
-    // Example of `StreamerMessage` with all the data (the data is synthetic)
-    //
-    // Note that `outcomes` for a given transaction won't be included into the same block.
-    // Execution outcomes are included into the blocks after the transaction or receipt
-    // are recorded on a chain; in most cases, it is the next block after the one that has
-    // the transaction or receipt.
-    //
-    // StreamerMessage {
-    //     block: BlockView {
-    //         author: "test.near",
-    //         header: BlockHeaderView {
-    //             height: 63596,
-    //             epoch_id: `Bk7pvZWUTfHRRZtfgTDjnQ6y5cV8yG2h3orCqJvUbiym`,
-    //             next_epoch_id: `3JuBZ4Gz5Eauf7PzQegfqSEDyvws3eKJYPbfGHAYmeR5`,
-    //             hash: `5X37niQWWcihDGQjsvDMHYKLCurNJyQLxCeLgneDb8mk`,
-    //             prev_hash: `2vJNJca72pBiq2eETq2xvuoc6caKDaUkdRgtdefyutbA`,
-    //             prev_state_root: `GkdxSBf4Kfq8V16N4Kqn3YdcThG1f5KG1KLBmXpMzP1k`,
-    //             chunk_receipts_root: `9ETNjrt6MkwTgSVMMbpukfxRshSD1avBUUa4R4NuqwHv`,
-    //             chunk_headers_root: `C7dVr9KdXYKt31yF2BkeAu115fpo79zYTqeU3FzqbFak`,
-    //             chunk_tx_root: `7tkzFg8RHBmMw1ncRJZCCZAizgq4rwCftTKYLce8RU8t`,
-    //             outcome_root: `7tkzFg8RHBmMw1ncRJZCCZAizgq4rwCftTKYLce8RU8t`,
-    //             chunks_included: 1,
-    //             challenges_root: `11111111111111111111111111111111`,
-    //             timestamp: 1618558205803345000,
-    //             timestamp_nanosec: 1618558205803345000,
-    //             random_value: `3cAa93XmoLaKAJQgWz3K7SiKwnA3uaxi8MGgLM78HTNS`,
-    //             validator_proposals: [],
-    //             chunk_mask: [
-    //                 true,
-    //             ],
-    //             gas_price: 1000000000,
-    //             rent_paid: 0,
-    //             validator_reward: 0,
-    //             total_supply: 2050206401403887985811862247311434,
-    //             challenges_result: [],
-    //             last_final_block: `DCkMmXYHqibzcMjgFjRXJP7eckAMLrA4ijggSApMNwKu`,
-    //             last_ds_final_block: `2vJNJca72pBiq2eETq2xvuoc6caKDaUkdRgtdefyutbA`,
-    //             next_bp_hash: `4DJWnxRbUhRrsXK6EBkx4nFeXHKgJWqteDnJ7Hv4MZ6M`,
-    //             block_merkle_root: `Bvn5K89fJ3uPNsj3324Ls9TXAGUVteHPpfKwKqL1La6W`,
-    //             approvals: [
-    //                 Some(
-    //                     ed25519:F816hgJod7nPfD2qQz5yhaKDMn1JXmvzj2iXegsJpsmPNnYYZpKYJXgyuVTVJ4TKQbcJ2Q3USCGZF6fX2TcwBBv,
-    //                 ),
-    //             ],
-    //             signature: ed25519:239NbE4BuJaxneQA3AEsPrsGY7v3wBgaezbgg56HER69zPrBoc3a4fbyVWPXeoKE3LvgGma1g6pSHk9QHkmETCZY,
-    //             latest_protocol_version: 43,
-    //         },
-    //         chunks: [
-    //             ChunkHeaderView {
-    //                 chunk_hash: `2M2oeNFBbUUnHfkU1UuBr8EKBCLMH9xr2vfsGRpyiBmA`,
-    //                 prev_block_hash: `2vJNJca72pBiq2eETq2xvuoc6caKDaUkdRgtdefyutbA`,
-    //                 outcome_root: `11111111111111111111111111111111`,
-    //                 prev_state_root: `3gZPPijaumgMRCvMuuZZM1Ab2LoHTSfYigMKwLqZ67m6`,
-    //                 encoded_merkle_root: `79Bt7ivt9Qhp3c6dJYnueaTyPVweYxZRpQHASRRAiyuy`,
-    //                 encoded_length: 8,
-    //                 height_created: 63596,
-    //                 height_included: 63596,
-    //                 shard_id: 0,
-    //                 gas_used: 0,
-    //                 gas_limit: 1000000000000000,
-    //                 rent_paid: 0,
-    //                 validator_reward: 0,
-    //                 balance_burnt: 0,
-    //                 outgoing_receipts_root: `H4Rd6SGeEBTbxkitsCdzfu9xL9HtZ2eHoPCQXUeZ6bW4`,
-    //                 tx_root: `11111111111111111111111111111111`,
-    //                 validator_proposals: [],
-    //                 signature: ed25519:2vWNayBzEoW5DRc7gTdhxdLbkKuK6ACQ78p3JGpKSAZZCarnLroeoALPAFwpr9ZNPxBqdVYh9QLBe7WHZebsS17Z,
-    //             },
-    //         ],
-    //     },
-    //     shards: [
-    //         IndexerShard {
-    //             shard_id: 0,
-    //             chunk: Some(
-    //                 IndexerChunkView {
-    //                     author: "test.near",
-    //                     header: ChunkHeaderView {
-    //                         chunk_hash: `2M2oeNFBbUUnHfkU1UuBr8EKBCLMH9xr2vfsGRpyiBmA`,
-    //                         prev_block_hash: `2vJNJca72pBiq2eETq2xvuoc6caKDaUkdRgtdefyutbA`,
-    //                         outcome_root: `11111111111111111111111111111111`,
-    //                         prev_state_root: `3gZPPijaumgMRCvMuuZZM1Ab2LoHTSfYigMKwLqZ67m6`,
-    //                         encoded_merkle_root: `79Bt7ivt9Qhp3c6dJYnueaTyPVweYxZRpQHASRRAiyuy`,
-    //                         encoded_length: 8,
-    //                         height_created: 63596,
-    //                         height_included: 0,
-    //                         shard_id: 0,
-    //                         gas_used: 0,
-    //                         gas_limit: 1000000000000000,
-    //                         rent_paid: 0,
-    //                         validator_reward: 0,
-    //                         balance_burnt: 0,
-    //                         outgoing_receipts_root: `H4Rd6SGeEBTbxkitsCdzfu9xL9HtZ2eHoPCQXUeZ6bW4`,
-    //                         tx_root: `11111111111111111111111111111111`,
-    //                         validator_proposals: [],
-    //                         signature: ed25519:2vWNayBzEoW5DRc7gTdhxdLbkKuK6ACQ78p3JGpKSAZZCarnLroeoALPAFwpr9ZNPxBqdVYh9QLBe7WHZebsS17Z,
-    //                     },
-    //                     transactions: [
-    //                         IndexerTransactionWithOutcome {
-    //                             transaction: SignedTransactionView {
-    //                                 signer_id: "test.near",
-    //                                 public_key: ed25519:8NA7mh6TAWzy2qz68bHp62QHTEQ6nJLfiYeKDRwEbU3X,
-    //                                 nonce: 1,
-    //                                 receiver_id: "some.test.near",
-    //                                 actions: [
-    //                                     CreateAccount,
-    //                                     Transfer {
-    //                                         deposit: 40000000000000000000000000,
-    //                                     },
-    //                                     AddKey {
-    //                                         public_key: ed25519:2syGhqwJ8ba2nUGmP9tkZn9m1DYZPYYobpufiERVnug8,
-    //                                         access_key: AccessKeyView {
-    //                                             nonce: 0,
-    //                                             permission: FullAccess,
-    //                                         },
-    //                                     },
-    //                                 ],
-    //                                 signature: ed25519:Qniuu7exnr6xbe6gKafV5vDhuwM1jt9Bn7sCTF6cHfPpYWVJ4Q6kq8RAxKSeLoxbCreVp1XzMMJmXt8YcUqmMYw,
-    //                                 hash: `8dNv9S8rAFwso9fLwfDQXmw5yv5zscDjQpta96pMF6Bi`,
-    //                             },
-    //                             outcome: IndexerExecutionOutcomeWithReceipt {
-    //                                 execution_outcome: ExecutionOutcomeWithIdView {
-    //                                     proof: [],
-    //                                     block_hash: `G9v6Fsv94xaa7BRY2N5PFF5PJwT7ec6DPzQK73Yf3CZ6`,
-    //                                     id: `8dNv9S8rAFwso9fLwfDQXmw5yv5zscDjQpta96pMF6Bi`,
-    //                                     outcome: ExecutionOutcomeView {
-    //                                         logs: [],
-    //                                         receipt_ids: [
-    //                                         `CbWu7WYYbYbn3kThs5gcxANrxy7AKLcMcBLxLw8Zq1Fz`,
-    //                                         ],
-    //                                         gas_burnt: 424555062500,
-    //                                         tokens_burnt: 424555062500000000000,
-    //                                         executor_id: "test.near",
-    //                                         status: SuccessReceiptId(CbWu7WYYbYbn3kThs5gcxANrxy7AKLcMcBLxLw8Zq1Fz),
-    //                                     },
-    //                                 },
-    //                                 receipt: None,
-    //                             },
-    //                         },
-    //                     ],
-    //                     receipts: [
-    //                         ReceiptView {
-    //                             predecessor_id: "test.near",
-    //                             receiver_id: "some.test.near",
-    //                             receipt_id: `CbWu7WYYbYbn3kThs5gcxANrxy7AKLcMcBLxLw8Zq1Fz`,
-    //                             receipt: Action {
-    //                                 signer_id: "test.near",
-    //                                 signer_public_key: ed25519:8NA7mh6TAWzy2qz68bHp62QHTEQ6nJLfiYeKDRwEbU3X,
-    //                                 gas_price: 1030000000,
-    //                                 output_data_receivers: [],
-    //                                 input_data_ids: [],
-    //                                 actions: [
-    //                                     CreateAccount,
-    //                                     Transfer {
-    //                                         deposit: 40000000000000000000000000,
-    //                                     },
-    //                                     AddKey {
-    //                                         public_key: ed25519:2syGhqwJ8ba2nUGmP9tkZn9m1DYZPYYobpufiERVnug8,
-    //                                         access_key: AccessKeyView {
-    //                                             nonce: 0,
-    //                                             permission: FullAccess,
-    //                                         },
-    //                                     },
-    //                                 ],
-    //                             },
-    //                         },
-    //                     ],
-    //                 },
-    //             ),
-    //             receipt_execution_outcomes: [
-    //                 IndexerExecutionOutcomeWithReceipt {
-    //                     execution_outcome: ExecutionOutcomeWithIdView {
-    //                         proof: [],
-    //                         block_hash: `BXPB6DQGmBrjARvcgYwS8qKLkyto6dk9NfawGSmfjE9Q`,
-    //                         id: `CbWu7WYYbYbn3kThs5gcxANrxy7AKLcMcBLxLw8Zq1Fz`,
-    //                         outcome: ExecutionOutcomeView {
-    //                             logs: [],
-    //                             receipt_ids: [
-    //                             `8vJ1QWM4pffRDnW3c5CxFFV5cMx8wiqxsAqmZTitHvfh`,
-    //                             ],
-    //                             gas_burnt: 424555062500,
-    //                             tokens_burnt: 424555062500000000000,
-    //                             executor_id: "some.test.near",
-    //                             status: SuccessValue(``),
-    //                         },
-    //                     },
-    //                     receipt: ReceiptView {
-    //                         predecessor_id: "test.near",
-    //                         receiver_id: "some.test.near",
-    //                         receipt_id: `CbWu7WYYbYbn3kThs5gcxANrxy7AKLcMcBLxLw8Zq1Fz`,
-    //                         receipt: Action {
-    //                             signer_id: "test.near",
-    //                             signer_public_key: ed25519:8NA7mh6TAWzy2qz68bHp62QHTEQ6nJLfiYeKDRwEbU3X,
-    //                             gas_price: 1030000000,
-    //                             output_data_receivers: [],
-    //                             input_data_ids: [],
-    //                             actions: [
-    //                                 CreateAccount,
-    //                                 Transfer {
-    //                                     deposit: 40000000000000000000000000,
-    //                                 },
-    //                                 AddKey {
-    //                                     public_key: ed25519:2syGhqwJ8ba2nUGmP9tkZn9m1DYZPYYobpufiERVnug8,
-    //                                     access_key: AccessKeyView {
-    //                                         nonce: 0,
-    //                                         permission: FullAccess,
-    //                                     },
-    //                                 },
-    //                             ],
-    //                         },
-    //                     },
-    //                 },
-    //             ],
-    //         },
-    //     ],
-    //     state_changes: [
-    //         StateChangeWithCauseView {
-    //             cause: ValidatorAccountsUpdate,
-    //             value: AccountUpdate {
-    //                 account_id: "test.near",
-    //                 account: AccountView {
-    //                     amount: 1000000000000000000000000000000000,
-    //                     locked: 50000000000000000000000000000000,
-    //                     code_hash: `11111111111111111111111111111111`,
-    //                     storage_usage: 182,
-    //                     storage_paid_at: 0,
-    //                 },
-    //             },
-    //         },
-    //     ],
-    // }
+fn parse_message(
+    streamer_message: &near_indexer::StreamerMessage,
+    watching_list: &[near_indexer_primitives::types::AccountId],
+    tx_receipt_ids: &mut HashMap<String, String>,
+    wanted_receipt_ids: &mut HashSet<String>,
+) {
+    eprintln!("Block height: {}", streamer_message.block.header.height);
+    // Iterate over the shards in the block
+    for shard in streamer_message.shards.clone() {
+        let chunk = if let Some(chunk) = shard.chunk {
+            chunk
+        } else {
+            continue;
+        };
+
+        // Iterate over the transactions in the chunk
+        for transaction in chunk.transactions {
+            // Check if transaction receiver id is one of the list we are interested in
+            if is_tx_receiver_watched(&transaction, &watching_list) {
+                // Extract receipt_id transaction was converted into
+                let converted_into_receipt_id = transaction
+                    .outcome
+                    .execution_outcome
+                    .outcome
+                    .receipt_ids
+                    .first()
+                    .expect("`receipt_ids` must contain one Receipt Id")
+                    .to_string();
+                // Add `converted_into_receipt_id` to the list of receipt ids we are interested in
+                wanted_receipt_ids.insert(converted_into_receipt_id.clone());
+                // Add key value pair of transaction hash and in which receipt id it was converted for further lookup
+                tx_receipt_ids.insert(
+                    converted_into_receipt_id,
+                    transaction.transaction.hash.to_string(),
+                );
+            }
+        }
+
+        // Iterate over the execution outcomes in the shard
+        for execution_outcome in shard.receipt_execution_outcomes {
+            // Check if the receipt id is in the list of receipt ids to track
+            if let Some(receipt_id) =
+                wanted_receipt_ids.take(&execution_outcome.receipt.receipt_id.to_string())
+            {
+                // Log the transaction hash, the receipt id and the status
+                println!(
+                    "\nTransaction hash {:?} related to {} executed with status {:?}",
+                    tx_receipt_ids.get(receipt_id.as_str()),
+                    &execution_outcome.receipt.receiver_id,
+                    execution_outcome.execution_outcome.outcome.status
+                );
+                if let near_indexer_primitives::views::ReceiptEnumView::Action {
+                    signer_id, ..
+                } = &execution_outcome.receipt.receipt
+                {
+                    // Log the signer id
+                    eprintln!("{}", signer_id);
+                }
+
+                if let near_indexer_primitives::views::ReceiptEnumView::Action { actions, .. } =
+                    execution_outcome.receipt.receipt
+                {
+                    // Iterate over the actions in the receipt
+                    for action in actions.iter() {
+                        // If the action is a function call, log the decoded arguments
+                        if let near_indexer_primitives::views::ActionView::FunctionCall {
+                            args,
+                            ..
+                        } = action
+                        {
+                            if let Ok(args_json) =
+                                serde_json::from_slice::<serde_json::Value>(&args)
+                            {
+                                eprintln!("{:#?}", args_json);
+                            }
+                        }
+                    }
+                }
+                // Remove the receipt id from the map of receipt ids to transaction hashes because we have processed it
+                tx_receipt_ids.remove(receipt_id.as_str());
+            }
+        }
+    }
+}
+
+fn is_tx_receiver_watched(
+    tx: &near_indexer_primitives::IndexerTransactionWithOutcome,
+    watching_list: &[near_indexer_primitives::types::AccountId],
+) -> bool {
+    watching_list.contains(&tx.transaction.receiver_id)
 }

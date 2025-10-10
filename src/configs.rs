@@ -6,6 +6,12 @@ use near_indexer::near_primitives::types::Gas;
 #[clap(version = "0.1", author = "Near Inc. <hello@nearprotocol.com>")]
 #[clap(subcommand_required = true, arg_required_else_help = true)]
 pub(crate) struct Opts {
+    /// block height to start indexing from
+    #[clap(long)]
+    pub block_height: u64,
+    /// account ids to watch for
+    #[clap(long)]
+    pub accounts: String,
     /// Sets a custom config dir. Defaults to ~/.near/
     #[clap(short = 'd', long)]
     pub home_dir: Option<std::path::PathBuf>,

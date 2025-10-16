@@ -19,29 +19,33 @@ fn main() -> Result<()> {
     let home_dir = opts.home_dir.unwrap_or_else(near_indexer::get_default_home);
 
     match opts.subcmd {
-        SubCommand::Run => {
+        SubCommand::Run(args) => {
             // Get the list of accounts to watch from the command line arguments
-            let watching_list: Vec<AccountId> = opts
+            let watching_list: Vec<AccountId> = args
                 .accounts
                 .split(',')
                 .map(|elem| AccountId::from_str(elem).expect("AccountId is invalid"))
                 .collect();
 
-            let system = actix::System::new();
-            system.block_on(async move {
-                let indexer_config = near_indexer::IndexerConfig {
-                    home_dir,
-                    sync_mode: near_indexer::SyncModeEnum::BlockHeight(opts.block_height),
-                    await_for_node_synced: near_indexer::AwaitForNodeSyncedEnum::StreamWhileSyncing,
-                    finality: near_indexer::near_primitives::types::Finality::Final,
-                    validate_genesis: true,
-                };
+            let indexer_config = near_indexer::IndexerConfig {
+                home_dir,
+                sync_mode: near_indexer::SyncModeEnum::BlockHeight(args.block_height),
+                await_for_node_synced: near_indexer::AwaitForNodeSyncedEnum::StreamWhileSyncing,
+                finality: near_indexer::near_primitives::types::Finality::Final,
+                validate_genesis: true,
+            };
+            let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create Tokio runtime");
+            tokio_runtime.block_on(async move {
+                eprintln!("Creating indexer...");
                 let indexer = near_indexer::Indexer::new(indexer_config).expect("Indexer::new()");
+                eprintln!("Creating streamer...");
                 let stream = indexer.streamer();
+                eprintln!("Listening to blocks...");
                 listen_blocks(stream, watching_list).await;
-                actix::System::current().stop();
             });
-            system.run().unwrap();
         }
         SubCommand::Init(config) => near_indexer::indexer_init_configs(&home_dir, config.into())?,
     }

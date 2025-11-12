@@ -13,6 +13,12 @@ use near_indexer_primitives::types::AccountId;
 mod configs;
 
 fn main() -> Result<()> {
+    openssl_probe::init_ssl_cert_env_vars();
+    let env_filter = near_o11y::tracing_subscriber::EnvFilter::new(
+        "nearcore=info,indexer_example=info,tokio_reactor=info,near=info,\
+         stats=info,telemetry=info,indexer=info,near-performance-metrics=info",
+    );
+    let _subscriber = near_o11y::default_subscriber(env_filter, &Default::default()).global();
     // Parse the command line arguments
     let opts: Opts = Opts::parse();
 
@@ -34,18 +40,16 @@ fn main() -> Result<()> {
                 finality: near_indexer::near_primitives::types::Finality::Final,
                 validate_genesis: true,
             };
-            let tokio_runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create Tokio runtime");
-            tokio_runtime.block_on(async move {
-                eprintln!("Creating indexer...");
+            let system = actix::System::new();
+            system.block_on(async move {
+                println!("Creating indexer...");
                 let indexer = near_indexer::Indexer::new(indexer_config).expect("Indexer::new()");
-                eprintln!("Creating streamer...");
+                println!("Creating streamer...");
                 let stream = indexer.streamer();
-                eprintln!("Listening to blocks...");
-                listen_blocks(stream, watching_list).await;
+                println!("Listening to blocks...");
+                actix::spawn(listen_blocks(stream, watching_list));
             });
+            system.run()?;
         }
         SubCommand::Init(config) => near_indexer::indexer_init_configs(&home_dir, config.into())?,
     }

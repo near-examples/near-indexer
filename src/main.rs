@@ -33,9 +33,15 @@ fn main() -> Result<()> {
                 .map(|elem| AccountId::from_str(elem).expect("AccountId is invalid"))
                 .collect();
 
+            let sync_mode = if let Some(block_height) = args.block_height {
+                near_indexer::SyncModeEnum::BlockHeight(block_height)
+            } else {
+                near_indexer::SyncModeEnum::LatestSynced
+            };
+
             let indexer_config = near_indexer::IndexerConfig {
                 home_dir,
-                sync_mode: near_indexer::SyncModeEnum::BlockHeight(args.block_height),
+                sync_mode: sync_mode,
                 await_for_node_synced: near_indexer::AwaitForNodeSyncedEnum::StreamWhileSyncing,
                 finality: near_indexer::near_primitives::types::Finality::Final,
                 validate_genesis: true,

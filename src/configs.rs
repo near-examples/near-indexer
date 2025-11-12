@@ -26,7 +26,7 @@ pub(crate) enum SubCommand {
 pub(crate) struct RunArgs {
     /// block height to start indexing from
     #[clap(long)]
-    pub block_height: u64,
+    pub block_height: Option<u64>,
     /// account ids to watch for
     #[clap(long)]
     pub accounts: String,

@@ -46,16 +46,20 @@ fn main() -> Result<()> {
                 finality: near_indexer::near_primitives::types::Finality::Final,
                 validate_genesis: true,
             };
-            let system = actix::System::new();
-            system.block_on(async move {
+            let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create Tokio runtime");
+            tokio_runtime.block_on(async move {
                 println!("Creating indexer...");
-                let indexer = near_indexer::Indexer::new(indexer_config).expect("Indexer::new()");
+                let indexer = near_indexer::Indexer::new(indexer_config)
+                    .await
+                    .expect("Indexer::new()");
                 println!("Creating streamer...");
                 let stream = indexer.streamer();
                 println!("Listening to blocks...");
-                actix::spawn(listen_blocks(stream, watching_list));
+                listen_blocks(stream, watching_list).await;
             });
-            system.run()?;
         }
         SubCommand::Init(config) => near_indexer::indexer_init_configs(&home_dir, config.into())?,
     }

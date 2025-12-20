@@ -14,8 +14,8 @@ actix = "0.13.5"
 openssl-probe = "0.1.6"
 
 
-near-indexer = { git = "https://github.com/near/nearcore", tag = "2.9.1" }
-near-indexer-primitives = { git = "https://github.com/near/nearcore", tag = "2.9.1" }
-near-config-utils = { git = "https://github.com/near/nearcore", tag = "2.9.1" }
-near-o11y = { git = "https://github.com/near/nearcore", tag = "2.9.1" }
-near-primitives = { git = "https://github.com/near/nearcore", tag = "2.9.1" }
+near-indexer = { git = "https://github.com/near/nearcore", tag = "2.10.3" }
+near-indexer-primitives = { git = "https://github.com/near/nearcore", tag = "2.10.3" }
+near-config-utils = { git = "https://github.com/near/nearcore", tag = "2.10.3" }
+near-o11y = { git = "https://github.com/near/nearcore", tag = "2.10.3" }
+near-primitives = { git = "https://github.com/near/nearcore", tag = "2.10.3" }
